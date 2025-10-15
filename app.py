@@ -10,6 +10,7 @@ from typing import List
 
 openai.api_key = os.getenv("OPENAI_API_KEY")  # or st.secrets["OPENAI_API_KEY"]
 EMBED_MODEL = "all-MiniLM-L6-v2"
+client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 def read_pdf(file) -> str:
@@ -49,8 +50,15 @@ def retrieve(query, store, model, top_k=3):
     return [store["chunks"][i] for i in I[0]]
 
 def synthesize_answer(query, contexts):
+   
     context_text = "\n\n".join(contexts)
-    prompt = f"Using the context below, answer the query concisely.\n\nContext:\n{context_text}\n\nQuestion: {query}\nAnswer:"
+    prompt = f"""Using the context below, answer the question concisely.
+    
+Context:
+{context_text}
+
+Question: {query}
+Answer:"""
 
     try:
         response = client.chat.completions.create(
