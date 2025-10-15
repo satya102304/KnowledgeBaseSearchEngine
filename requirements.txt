@@ -1,6 +1,5 @@
-streamlit>=1.25
-faiss-cpu>=1.7.4
-sentence-transformers>=2.2.2
-openai>=1.31.0
-pypdf>=3.16.0
-numpy>=1.24
+streamlit
+faiss-cpu
+sentence-transformers
+openai
+pypdf
