@@ -53,7 +53,7 @@ def synthesize_answer(query, contexts):
     prompt = f"Using the context below, answer the query concisely.\n\nContext:\n{context_text}\n\nQuestion: {query}\nAnswer:"
 
     try:
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-4-turbo",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
