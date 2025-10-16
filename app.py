@@ -1,52 +1,51 @@
 import os
 import io
-import faiss
 import pickle
+import faiss
 import numpy as np
 import streamlit as st
 from PIL import Image
 from pypdf import PdfReader
+from pdf2image import convert_from_path
+import easyocr
 from sentence_transformers import SentenceTransformer
-from typing import List
-from openai import OpenAI
-import easyocr  # for OCR on images
+from transformers import CLIPProcessor, CLIPModel
+import torch
 
-# ----------------------------
+# -----------------------------
 # CONFIG
-# ----------------------------
-st.set_page_config(page_title="RAG Q&A App", page_icon="📚")
-
-# Initialize OpenAI client
-client = OpenAI(api_key=st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY")))
+# -----------------------------
+st.set_page_config(page_title="RAG Q&A (PDF + Image)", page_icon="📚")
 
 EMBED_MODEL = "all-MiniLM-L6-v2"
-INDEX_FILE = "uploaded_vector_store.pkl"
+INDEX_FILE = "vector_store.pkl"
 
-# ----------------------------
+device = "cuda" if torch.cuda.is_available() else "cpu"
+
+# -----------------------------
 # UTILS
-# ----------------------------
+# -----------------------------
 def extract_text_from_pdf(file):
-    """Extracts text from a PDF file"""
     reader = PdfReader(file)
     text = ""
     for page in reader.pages:
         text += page.extract_text() or ""
-    return text.strip()
+    # If PDF is scanned, fall back to OCR
+    if not text.strip():
+        images = convert_from_path(file)
+        reader_ocr = easyocr.Reader(["en"], verbose=False)
+        for img in images:
+            results = reader_ocr.readtext(np.array(img), detail=0)
+            text += " ".join(results) + " "
+    return text.strip() or "[No readable text found]"
 
 def extract_text_from_image(file):
-    """Extract text robustly from any uploaded image"""
-    try:
-        image = Image.open(file).convert("RGB")
-        image_np = np.array(image)
-        reader = easyocr.Reader(["en"], verbose=False)
-        results = reader.readtext(image_np, detail=0)
-        return " ".join(results).strip() or "[No readable text found]"
-    except Exception as e:
-        return f"[Error reading image: {str(e)}]"
+    image = Image.open(file).convert("RGB")
+    reader = easyocr.Reader(["en"], verbose=False)
+    results = reader.readtext(np.array(image), detail=0)
+    return " ".join(results).strip() or "[No readable text found]"
 
-
-def split_text(text: str, chunk_size=500, overlap=100):
-    """Splits long text into smaller chunks for embedding"""
+def split_text(text, chunk_size=500, overlap=100):
     chunks = []
     start = 0
     while start < len(text):
@@ -55,107 +54,76 @@ def split_text(text: str, chunk_size=500, overlap=100):
         start += chunk_size - overlap
     return chunks
 
-# ----------------------------
-# EMBEDDING + INDEX CREATION
-# ----------------------------
-def build_index_from_texts(texts: List[str]):
-    """Creates FAISS index from text chunks"""
+def build_index(texts):
     model = SentenceTransformer(EMBED_MODEL)
     chunks = []
     for doc in texts:
         chunks.extend(split_text(doc))
-
     embeddings = model.encode(chunks, convert_to_numpy=True)
     index = faiss.IndexFlatL2(embeddings.shape[1])
     index.add(embeddings)
-
-    store = {"index": index, "chunks": chunks}
+    store = {"index": index, "chunks": chunks, "model": model}
     with open(INDEX_FILE, "wb") as f:
         pickle.dump(store, f)
+    return store
 
-    return store, model
-
-# ----------------------------
-# RETRIEVAL
-# ----------------------------
-def retrieve(query, store, model, top_k=3):
-    """Retrieves most relevant text chunks for a query"""
-    q_emb = model.encode([query], convert_to_numpy=True)
+def retrieve(query, store, top_k=3):
+    q_emb = store["model"].encode([query], convert_to_numpy=True)
     D, I = store["index"].search(q_emb, top_k)
     return [store["chunks"][i] for i in I[0]]
 
-# ----------------------------
-# SYNTHESIS
-# ----------------------------
-def synthesize_answer(query, contexts):
-    """Uses OpenAI to synthesize a concise answer from context"""
-    context_text = "\n\n".join(contexts)
-    prompt = f"""
-    You are a helpful assistant. Use the provided context to answer the user's question.
-    If the answer is not in the context, say you don't know.
+# -----------------------------
+# OPTIONAL: CLIP for image understanding
+# -----------------------------
+clip_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(device)
+clip_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
 
-    Context:
-    {context_text}
+def get_image_labels(image: Image.Image, candidate_labels=["cat","dog","flower","document","person","car"]):
+    inputs = clip_processor(text=candidate_labels, images=image, return_tensors="pt", padding=True).to(device)
+    outputs = clip_model(**inputs)
+    image_features = outputs.image_embeds / outputs.image_embeds.norm(p=2, dim=-1, keepdim=True)
+    text_features = outputs.text_embeds / outputs.text_embeds.norm(p=2, dim=-1, keepdim=True)
+    similarity = (image_features @ text_features.T).squeeze(0)
+    top_idx = similarity.argmax().item()
+    return candidate_labels[top_idx]
 
-    Question: {query}
-    Answer:
-    """
+# -----------------------------
+# STREAMLIT APP
+# -----------------------------
+st.title("📚 RAG Q&A (PDF + Image)")
+st.info("Upload PDF or image files. Ask any question and get answers from the uploaded content!")
 
-    try:
-        response = client.chat.completions.create(
-            model="gpt-4-turbo",
-            messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
-        )
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        return f"⚠️ Error: {str(e)}"
+uploaded_files = st.file_uploader("Upload PDFs or Images", type=["pdf","png","jpg","jpeg"], accept_multiple_files=True)
 
-# ----------------------------
-# STREAMLIT UI
-# ----------------------------
-def main():
-    st.title("📚 Knowledge-base Q&A (PDF + Image)")
-    st.markdown("Upload a **PDF** or **Image**, then ask questions about its content!")
+if uploaded_files:
+    all_texts = []
+    for file in uploaded_files:
+        if file.type == "application/pdf":
+            text = extract_text_from_pdf(file)
+            st.success(f"✅ Extracted text from PDF: {file.name}")
+        else:
+            text = extract_text_from_image(file)
+            st.write(f"✅ Extracted text preview ({file.name}): {text[:500]}...")
+            # Optional: get image label via CLIP
+            label = get_image_labels(Image.open(file))
+            st.write(f"🔹 Detected image content: {label}")
+        all_texts.append(text)
 
-    uploaded_files = st.file_uploader(
-        "Upload files (PDF or Image)", 
-        type=["pdf", "png", "jpg", "jpeg"], 
-        accept_multiple_files=True
-    )
+    if st.button("🔍 Build Knowledge Base"):
+        with st.spinner("Creating embeddings..."):
+            store = build_index(all_texts)
+            st.success("✅ Knowledge base created!")
 
-    if uploaded_files:
-        all_texts = []
-        for file in uploaded_files:
-            if file.type == "application/pdf":
-                text = extract_text_from_pdf(file)
-                st.success(f"✅ Extracted text from PDF: {file.name}")
-            else:
-                text = extract_text_from_image(file)
-                st.write("✅ Extracted text preview:", text[:1000])
+    query = st.text_input("Ask a question about the uploaded files:")
+    if query and os.path.exists(INDEX_FILE):
+        with open(INDEX_FILE, "rb") as f:
+            store = pickle.load(f)
+        contexts = retrieve(query, store)
+        st.subheader("🔍 Retrieved Contexts")
+        for i, ctx in enumerate(contexts, 1):
+            st.write(f"**Context {i}:** {ctx[:400]}...")
 
-                st.success(f"✅ Extracted text from Image: {file.name}")
-            all_texts.append(text)
-
-        if st.button("🔍 Build Knowledge Base"):
-            with st.spinner("Creating embeddings and index..."):
-                store, model = build_index_from_texts(all_texts)
-                st.success("✅ Vector store created successfully!")
-
-            query = st.text_input("Ask a question about your uploaded content:")
-            if query:
-                with st.spinner("Retrieving relevant info..."):
-                    contexts = retrieve(query, store, model)
-                    st.subheader("🔍 Retrieved Contexts")
-                    for i, ctx in enumerate(contexts, 1):
-                        st.markdown(f"**Context {i}:** {ctx[:400]}...")
-
-                with st.spinner("Synthesizing answer..."):
-                    answer = synthesize_answer(query, contexts)
-                    st.subheader("🧠 Synthesized Answer")
-                    st.write(answer)
-    else:
-        st.info("👆 Please upload at least one PDF or image file to begin.")
-
-if __name__ == "__main__":
-    main()
+        # Simple answer synthesis using the retrieved context
+        answer = " ".join(contexts)  # For local, you can plug in a small LLM here if desired
+        st.subheader("🧠 Answer (from context)")
+        st.write(answer)
