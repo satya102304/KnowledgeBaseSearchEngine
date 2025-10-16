@@ -2,6 +2,7 @@ import os
 import io
 import faiss
 import pickle
+import numpy as np
 import streamlit as st
 from PIL import Image
 from pypdf import PdfReader
