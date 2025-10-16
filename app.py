@@ -33,11 +33,16 @@ def extract_text_from_pdf(file):
     return text.strip()
 
 def extract_text_from_image(file):
-    """Extracts text from an image using EasyOCR"""
-    image = Image.open(file)
-    reader = easyocr.Reader(["en"], verbose=False)
-    results = reader.readtext(image, detail=0)
-    return " ".join(results).strip()
+    """Extract text robustly from any uploaded image"""
+    try:
+        image = Image.open(file).convert("RGB")
+        image_np = np.array(image)
+        reader = easyocr.Reader(["en"], verbose=False)
+        results = reader.readtext(image_np, detail=0)
+        return " ".join(results).strip() or "[No readable text found]"
+    except Exception as e:
+        return f"[Error reading image: {str(e)}]"
+
 
 def split_text(text: str, chunk_size=500, overlap=100):
     """Splits long text into smaller chunks for embedding"""
