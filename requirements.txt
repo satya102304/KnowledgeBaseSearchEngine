@@ -1,5 +1,14 @@
-streamlit
+# --- Core app dependencies ---
+streamlit>=1.38.0
 faiss-cpu
-sentence-transformers
-openai
-pypdf
+sentence-transformers>=2.7.0
+openai>=1.0.0
+
+# --- PDF and Image processing ---
+pypdf>=4.0.0
+pillow>=10.0.0
+easyocr>=1.7.1
+
+# --- Optional utilities ---
+numpy>=1.26.0
+torch>=2.2.0
