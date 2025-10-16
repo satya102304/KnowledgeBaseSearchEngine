@@ -1,37 +1,40 @@
 import os
+import io
 import faiss
 import pickle
-import openai
 import streamlit as st
+from PIL import Image
 from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
 from typing import List
+from openai import OpenAI
+import pytesseract  # for OCR on images
 
 # ----------------------------
 # CONFIG
 # ----------------------------
-openai.api_key = os.getenv("OPENAI_API_KEY")  # or st.secrets["OPENAI_API_KEY"]
+st.set_page_config(page_title="RAG Search Engine", page_icon="📚")
+
+# Initialize OpenAI client
+client = OpenAI(api_key=st.secrets.get("OPENAI_API_KEY", os.getenv("OPENAI_API_KEY")))
+
 EMBED_MODEL = "all-MiniLM-L6-v2"
-DATA_DIR = "docs"
-INDEX_FILE = "vector_store.pkl"
+INDEX_FILE = "uploaded_vector_store.pkl"
 
 # ----------------------------
 # UTILS
 # ----------------------------
-def load_docs() -> List[str]:
-    docs = []
-    for file in os.listdir(DATA_DIR):
-        path = os.path.join(DATA_DIR, file)
-        if file.endswith(".pdf"):
-            reader = PdfReader(path)
-            text = ""
-            for page in reader.pages:
-                text += page.extract_text() or ""
-            docs.append(text)
-        elif file.endswith(".txt"):
-            with open(path, "r", encoding="utf-8") as f:
-                docs.append(f.read())
-    return docs
+def extract_text_from_pdf(file):
+    reader = PdfReader(file)
+    text = ""
+    for page in reader.pages:
+        text += page.extract_text() or ""
+    return text.strip()
+
+def extract_text_from_image(file):
+    image = Image.open(file)
+    text = pytesseract.image_to_string(image)
+    return text.strip()
 
 def split_text(text: str, chunk_size=500, overlap=100):
     chunks = []
@@ -45,17 +48,10 @@ def split_text(text: str, chunk_size=500, overlap=100):
 # ----------------------------
 # EMBEDDING + INDEX CREATION
 # ----------------------------
-@st.cache_resource
-def build_or_load_index():
+def build_index_from_texts(texts: List[str]):
     model = SentenceTransformer(EMBED_MODEL)
-    if os.path.exists(INDEX_FILE):
-        with open(INDEX_FILE, "rb") as f:
-            store = pickle.load(f)
-        return store, model
-
-    docs = load_docs()
     chunks = []
-    for doc in docs:
+    for doc in texts:
         chunks.extend(split_text(doc))
 
     embeddings = model.encode(chunks, convert_to_numpy=True)
@@ -65,6 +61,7 @@ def build_or_load_index():
     store = {"index": index, "chunks": chunks}
     with open(INDEX_FILE, "wb") as f:
         pickle.dump(store, f)
+
     return store, model
 
 # ----------------------------
@@ -80,42 +77,68 @@ def retrieve(query, store, model, top_k=3):
 # ----------------------------
 def synthesize_answer(query, contexts):
     context_text = "\n\n".join(contexts)
-    prompt = f"Using the context below, answer the query concisely.\n\nContext:\n{context_text}\n\nQuestion: {query}\nAnswer:"
+    prompt = f"""
+    You are a helpful assistant. Use the provided context to answer the user's question.
+    If the answer is not in the context, say you don't know.
+
+    Context:
+    {context_text}
+
+    Question: {query}
+    Answer:
+    """
 
     try:
-        response = openai.ChatCompletion.create(
+        response = client.chat.completions.create(
             model="gpt-4-turbo",
             messages=[{"role": "user", "content": prompt}],
             temperature=0.3,
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        return f"Error: {e}"
+        return f"⚠️ Error: {str(e)}"
 
 # ----------------------------
 # STREAMLIT UI
 # ----------------------------
 def main():
     st.title("📚 Knowledge-base Search Engine (RAG Demo)")
-    st.markdown("Upload your documents in the `docs/` folder and start querying.")
+    st.markdown("Upload a **PDF** or **Image**, then ask questions about its content!")
 
-    store, model = build_or_load_index()
+    uploaded_files = st.file_uploader(
+        "Upload files (PDF or Image)", type=["pdf", "png", "jpg", "jpeg"], accept_multiple_files=True
+    )
 
-    query = st.text_input("Enter your query:")
-    if st.button("Search"):
-        if query:
-            with st.spinner("Retrieving relevant info..."):
-                contexts = retrieve(query, store, model)
-                st.subheader("🔍 Retrieved Contexts")
-                for i, ctx in enumerate(contexts, 1):
-                    st.markdown(f"**Context {i}:** {ctx[:400]}...")
+    if uploaded_files:
+        all_texts = []
+        for file in uploaded_files:
+            if file.type == "application/pdf":
+                text = extract_text_from_pdf(file)
+                st.success(f"✅ Extracted text from PDF: {file.name}")
+            else:
+                text = extract_text_from_image(file)
+                st.success(f"✅ Extracted text from Image: {file.name}")
+            all_texts.append(text)
 
-            with st.spinner("Synthesizing answer..."):
-                answer = synthesize_answer(query, contexts)
-                st.subheader("🧠 Synthesized Answer")
-                st.write(answer)
-        else:
-            st.warning("Please enter a query.")
+        if st.button("🔍 Build Knowledge Base"):
+            with st.spinner("Creating embeddings and index..."):
+                store, model = build_index_from_texts(all_texts)
+                st.success("Vector store created successfully!")
+
+            query = st.text_input("Ask a question about your document:")
+            if query:
+                with st.spinner("Retrieving relevant info..."):
+                    contexts = retrieve(query, store, model)
+                    st.subheader("🔍 Retrieved Contexts")
+                    for i, ctx in enumerate(contexts, 1):
+                        st.markdown(f"**Context {i}:** {ctx[:400]}...")
+
+                with st.spinner("Synthesizing answer..."):
+                    answer = synthesize_answer(query, contexts)
+                    st.subheader("🧠 Synthesized Answer")
+                    st.write(answer)
+    else:
+        st.info("👆 Please upload at least one PDF or image file to get started.")
 
 if __name__ == "__main__":
     main()
