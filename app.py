@@ -131,6 +131,8 @@ def main():
                 st.success(f"✅ Extracted text from PDF: {file.name}")
             else:
                 text = extract_text_from_image(file)
+                st.write("✅ Extracted text preview:", text[:1000])
+
                 st.success(f"✅ Extracted text from Image: {file.name}")
             all_texts.append(text)
 
