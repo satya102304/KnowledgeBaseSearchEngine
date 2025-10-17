@@ -5,7 +5,6 @@ from PIL import Image
 import numpy as np
 import easyocr
 import faiss
-import pickle
 from sentence_transformers import SentenceTransformer
 import openai
 
@@ -16,6 +15,7 @@ EMBED_MODEL = "all-MiniLM-L6-v2"
 # ================= HELPERS =================
 
 def extract_text_from_pdf(file):
+    """Extract text from PDF using pypdf"""
     pdf = PdfReader(file)
     text = ""
     for page in pdf.pages:
@@ -25,6 +25,7 @@ def extract_text_from_pdf(file):
     return text
 
 def split_text(text, chunk_size=1000, overlap=200):
+    """Split text into chunks for embeddings"""
     chunks = []
     start = 0
     while start < len(text):
@@ -35,18 +36,22 @@ def split_text(text, chunk_size=1000, overlap=200):
 
 @st.cache_resource
 def get_easyocr_reader():
+    """Load EasyOCR once"""
     return easyocr.Reader(["en"], gpu=False)
 
 @st.cache_resource
 def get_sentence_model():
+    """Load sentence-transformer model once"""
     return SentenceTransformer(EMBED_MODEL)
 
 def extract_text_from_image(file, reader):
+    """Extract text from image using EasyOCR"""
     image = Image.open(file)
     result = reader.readtext(np.array(image))
     return " ".join([text for (_, text, _) in result])
 
 def create_index(all_texts, model):
+    """Build FAISS index from list of texts"""
     chunks = []
     for text in all_texts:
         chunks.extend(split_text(text))
@@ -57,11 +62,13 @@ def create_index(all_texts, model):
     return store
 
 def retrieve(query, store, model, top_k=3):
+    """Retrieve top-k relevant text chunks"""
     q_emb = model.encode([query], convert_to_numpy=True)
     D, I = store["index"].search(q_emb, top_k)
     return [store["chunks"][i] for i in I[0]]
 
 def synthesize_answer(query, contexts):
+    """Call OpenAI to generate answer from contexts"""
     context_text = "\n\n".join(contexts)
     prompt = f"Using the following context, answer concisely:\n{context_text}\n\nQuestion: {query}\nAnswer:"
     try:
@@ -91,6 +98,7 @@ if "store" not in st.session_state:
 if "all_texts" not in st.session_state:
     st.session_state.all_texts = []
 
+# Load models
 model = get_sentence_model()
 reader = get_easyocr_reader()
 
@@ -98,7 +106,7 @@ reader = get_easyocr_reader()
 if uploaded_files:
     new_texts = []
     for file in uploaded_files:
-        if file.name.endswith(".pdf"):
+        if file.name.lower().endswith(".pdf"):
             text = extract_text_from_pdf(file)
         else:
             text = extract_text_from_image(file, reader)
