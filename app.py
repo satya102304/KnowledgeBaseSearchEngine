@@ -6,15 +6,17 @@ import numpy as np
 import easyocr
 import faiss
 from sentence_transformers import SentenceTransformer
-import openai
+from openai import OpenAI  # New SDK
 
 # ================= CONFIG =================
-openai.api_key = os.getenv("OPENAI_API_KEY")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+client = OpenAI(api_key=OPENAI_API_KEY)
 EMBED_MODEL = "all-MiniLM-L6-v2"
 
 # ================= HELPERS =================
 
 def extract_text_from_pdf(file):
+    """Extract text from PDF using pypdf"""
     pdf = PdfReader(file)
     text = ""
     for page in pdf.pages:
@@ -24,6 +26,7 @@ def extract_text_from_pdf(file):
     return text
 
 def split_text(text, chunk_size=1000, overlap=200):
+    """Split text into chunks for embeddings"""
     chunks = []
     start = 0
     while start < len(text):
@@ -34,18 +37,22 @@ def split_text(text, chunk_size=1000, overlap=200):
 
 @st.cache_resource
 def get_easyocr_reader():
+    """Load EasyOCR once"""
     return easyocr.Reader(["en"], gpu=False)
 
 @st.cache_resource
 def get_sentence_model():
+    """Load sentence-transformer model once"""
     return SentenceTransformer(EMBED_MODEL)
 
 def extract_text_from_image(file, reader):
+    """Extract text from image using EasyOCR"""
     image = Image.open(file)
     result = reader.readtext(np.array(image))
     return " ".join([text for (_, text, _) in result])
 
 def create_index(all_texts, model):
+    """Build FAISS index from list of texts"""
     chunks = []
     for text in all_texts:
         chunks.extend(split_text(text))
@@ -56,6 +63,7 @@ def create_index(all_texts, model):
     return store
 
 def retrieve(query, store, model, top_k=3):
+    """Retrieve top-k relevant text chunks"""
     q_emb = model.encode([query], convert_to_numpy=True)
     D, I = store["index"].search(q_emb, top_k)
     # Deduplicate chunks
@@ -69,7 +77,7 @@ def retrieve(query, store, model, top_k=3):
     return unique_chunks
 
 def synthesize_answer(query, contexts):
-    """Send the question + contexts directly to GPT (general-purpose)"""
+    """Send question + contexts directly to GPT using new OpenAI SDK"""
     if not contexts:
         return "No context available to answer the question."
 
@@ -77,10 +85,10 @@ def synthesize_answer(query, contexts):
     prompt = f"Answer the question based on the following contexts:\n{context_text}\n\nQuestion: {query}\nAnswer:"
 
     try:
-        response = openai.chat.completions.create(
+        response = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3,
+            temperature=0.3
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
@@ -90,6 +98,7 @@ def synthesize_answer(query, contexts):
 st.title("📚 Knowledge-base Search Engine (PDF + Image Upload)")
 st.markdown("Upload **PDFs or images**. Ask any question about your documents.")
 
+# File uploader
 uploaded_files = st.file_uploader(
     "Upload documents (PDF or image):",
     type=["pdf", "png", "jpg", "jpeg"],
@@ -106,7 +115,7 @@ if "all_texts" not in st.session_state:
 model = get_sentence_model()
 reader = get_easyocr_reader()
 
-# Process uploads
+# Process uploaded files
 if uploaded_files:
     new_texts = []
     for file in uploaded_files:
