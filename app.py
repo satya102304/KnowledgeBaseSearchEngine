@@ -6,14 +6,10 @@ import numpy as np
 import easyocr
 import faiss
 from sentence_transformers import SentenceTransformer
-from openai import OpenAI  # New SDK
+import openai
 
 # ================= CONFIG =================
-
-
-# Use Streamlit secrets
-client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
-
+openai.api_key = os.getenv("OPENAI_API_KEY")
 EMBED_MODEL = "all-MiniLM-L6-v2"
 
 # ================= HELPERS =================
@@ -69,46 +65,34 @@ def retrieve(query, store, model, top_k=3):
     """Retrieve top-k relevant text chunks"""
     q_emb = model.encode([query], convert_to_numpy=True)
     D, I = store["index"].search(q_emb, top_k)
-    # Deduplicate chunks
-    unique_chunks = []
-    seen = set()
-    for i in I[0]:
-        chunk = store["chunks"][i]
-        if chunk not in seen:
-            unique_chunks.append(chunk)
-            seen.add(chunk)
-    return unique_chunks
+    return [store["chunks"][i] for i in I[0]]
 
 def synthesize_answer(query, contexts):
-    """Send question + contexts directly to GPT using new OpenAI SDK"""
-    if not contexts:
-        return "No context available to answer the question."
-
+    """Call OpenAI to generate answer from contexts"""
     context_text = "\n\n".join(contexts)
-    prompt = f"Answer the question based on the following contexts:\n{context_text}\n\nQuestion: {query}\nAnswer:"
-
+    prompt = f"Using the following context, answer concisely:\n{context_text}\n\nQuestion: {query}\nAnswer:"
     try:
-        response = client.chat.completions.create(
+        response = openai.ChatCompletion.create(
             model="gpt-4o-mini",
             messages=[{"role": "user", "content": prompt}],
-            temperature=0.3
+            temperature=0.3,
         )
         return response.choices[0].message.content.strip()
     except Exception as e:
-        return f"Error calling OpenAI API: {e}"
+        return f"Error: {e}"
 
 # ================= STREAMLIT UI =================
 st.title("📚 Knowledge-base Search Engine (PDF + Image Upload)")
-st.markdown("Upload **PDFs or images**. Ask any question about your documents.")
 
-# File uploader
+st.markdown("Upload *PDFs or images*. The app will extract text and build a searchable knowledge base.")
+
 uploaded_files = st.file_uploader(
     "Upload documents (PDF or image):",
     type=["pdf", "png", "jpg", "jpeg"],
     accept_multiple_files=True,
 )
 
-# Initialize session_state
+# Initialize session_state variables
 if "store" not in st.session_state:
     st.session_state.store = None
 if "all_texts" not in st.session_state:
@@ -126,9 +110,9 @@ if uploaded_files:
             text = extract_text_from_pdf(file)
         else:
             text = extract_text_from_image(file, reader)
-        if text.strip():
+        if text.strip():  # Only keep non-empty texts
             new_texts.append(text)
-
+    
     if new_texts:
         st.session_state.all_texts.extend(new_texts)
         st.session_state.store = create_index(st.session_state.all_texts, model)
@@ -144,11 +128,11 @@ if st.session_state.store:
             contexts = retrieve(query, st.session_state.store, model)
             st.subheader("🔍 Retrieved Contexts")
             for i, ctx in enumerate(contexts, 1):
-                st.markdown(f"**Context {i}:** {ctx[:400]}...")
+                st.markdown(f"*Context {i}:* {ctx[:400]}...")
 
-        with st.spinner("Getting answer from GPT..."):
+        with st.spinner("Synthesizing answer..."):
             answer = synthesize_answer(query, contexts)
-            st.subheader("🧠 Answer")
+            st.subheader("🧠 Synthesized Answer")
             st.write(answer)
 else:
     st.info("Please upload at least one file to start.")
