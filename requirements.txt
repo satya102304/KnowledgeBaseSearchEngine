@@ -1,9 +1,12 @@
 streamlit==1.39.0
 pypdf==5.0.1
 numpy==1.26.4
+Pillow==10.0.1
+easyocr==1.7.1
 sentence-transformers==3.1.1
 transformers==4.45.2
 torch
 torchvision
 faiss-cpu>=1.9.0
 openai==1.47.0
+
