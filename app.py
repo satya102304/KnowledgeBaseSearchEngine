@@ -9,8 +9,11 @@ from sentence_transformers import SentenceTransformer
 from openai import OpenAI  # New SDK
 
 # ================= CONFIG =================
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=OPENAI_API_KEY)
+
+
+# Use Streamlit secrets
+client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+
 EMBED_MODEL = "all-MiniLM-L6-v2"
 
 # ================= HELPERS =================
