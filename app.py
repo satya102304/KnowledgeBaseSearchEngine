@@ -9,15 +9,12 @@ import pickle
 from sentence_transformers import SentenceTransformer
 import openai
 
-# ========== CONFIG ==========
+# ================= CONFIG =================
 openai.api_key = os.getenv("OPENAI_API_KEY")
 EMBED_MODEL = "all-MiniLM-L6-v2"
-INDEX_FILE = "vector_store.pkl"
-UPLOAD_DIR = "uploaded_docs"
 
-os.makedirs(UPLOAD_DIR, exist_ok=True)
+# ================= HELPERS =================
 
-# ========== HELPERS ==========
 def extract_text_from_pdf(file):
     pdf = PdfReader(file)
     text = ""
@@ -27,13 +24,7 @@ def extract_text_from_pdf(file):
             text += page_text
     return text
 
-def extract_text_from_image(file):
-    reader = easyocr.Reader(["en"], gpu=False)
-    image = Image.open(file)
-    result = reader.readtext(np.array(image))
-    return " ".join([text for (_, text, _) in result])
-
-def split_text(text, chunk_size=500, overlap=100):
+def split_text(text, chunk_size=1000, overlap=200):
     chunks = []
     start = 0
     while start < len(text):
@@ -43,13 +34,19 @@ def split_text(text, chunk_size=500, overlap=100):
     return chunks
 
 @st.cache_resource
-def load_or_create_index(all_texts):
-    model = SentenceTransformer(EMBED_MODEL)
-    if os.path.exists(INDEX_FILE):
-        with open(INDEX_FILE, "rb") as f:
-            store = pickle.load(f)
-        return store, model
+def get_easyocr_reader():
+    return easyocr.Reader(["en"], gpu=False)
 
+@st.cache_resource
+def get_sentence_model():
+    return SentenceTransformer(EMBED_MODEL)
+
+def extract_text_from_image(file, reader):
+    image = Image.open(file)
+    result = reader.readtext(np.array(image))
+    return " ".join([text for (_, text, _) in result])
+
+def create_index(all_texts, model):
     chunks = []
     for text in all_texts:
         chunks.extend(split_text(text))
@@ -57,9 +54,7 @@ def load_or_create_index(all_texts):
     index = faiss.IndexFlatL2(embeddings.shape[1])
     index.add(embeddings)
     store = {"index": index, "chunks": chunks}
-    with open(INDEX_FILE, "wb") as f:
-        pickle.dump(store, f)
-    return store, model
+    return store
 
 def retrieve(query, store, model, top_k=3):
     q_emb = model.encode([query], convert_to_numpy=True)
@@ -79,7 +74,7 @@ def synthesize_answer(query, contexts):
     except Exception as e:
         return f"Error: {e}"
 
-# ========== STREAMLIT UI ==========
+# ================= STREAMLIT UI =================
 st.title("📚 Knowledge-base Search Engine (PDF + Image Upload)")
 
 st.markdown("Upload **PDFs or images**. The app will extract text and build a searchable knowledge base.")
@@ -90,36 +85,46 @@ uploaded_files = st.file_uploader(
     accept_multiple_files=True,
 )
 
+# Initialize session_state variables
+if "store" not in st.session_state:
+    st.session_state.store = None
+if "all_texts" not in st.session_state:
+    st.session_state.all_texts = []
+
+model = get_sentence_model()
+reader = get_easyocr_reader()
+
+# Process uploaded files
 if uploaded_files:
-    all_texts = []
+    new_texts = []
     for file in uploaded_files:
-        file_path = os.path.join(UPLOAD_DIR, file.name)
-        with open(file_path, "wb") as f:
-            f.write(file.read())
-
         if file.name.endswith(".pdf"):
-            text = extract_text_from_pdf(file_path)
+            text = extract_text_from_pdf(file)
         else:
-            text = extract_text_from_image(file_path)
-        all_texts.append(text)
+            text = extract_text_from_image(file, reader)
+        if text.strip():  # Only keep non-empty texts
+            new_texts.append(text)
+    
+    if new_texts:
+        st.session_state.all_texts.extend(new_texts)
+        st.session_state.store = create_index(st.session_state.all_texts, model)
+        st.success(f"{len(new_texts)} new files processed and added to knowledge base!")
+    else:
+        st.warning("No readable text found in uploaded files.")
 
-    st.success(f"{len(uploaded_files)} files processed successfully!")
-    store, model = load_or_create_index(all_texts)
-
+# Ask questions
+if st.session_state.store:
     query = st.text_input("Ask a question about your documents:")
-    if st.button("Search"):
-        if query:
-            with st.spinner("Searching relevant content..."):
-                contexts = retrieve(query, store, model)
-                st.subheader("🔍 Retrieved Contexts")
-                for i, ctx in enumerate(contexts, 1):
-                    st.markdown(f"**Context {i}:** {ctx[:400]}...")
+    if query and st.button("Search"):
+        with st.spinner("Searching relevant content..."):
+            contexts = retrieve(query, st.session_state.store, model)
+            st.subheader("🔍 Retrieved Contexts")
+            for i, ctx in enumerate(contexts, 1):
+                st.markdown(f"**Context {i}:** {ctx[:400]}...")
 
-            with st.spinner("Synthesizing answer..."):
-                answer = synthesize_answer(query, contexts)
-                st.subheader("🧠 Synthesized Answer")
-                st.write(answer)
-        else:
-            st.warning("Please enter a question to search.")
+        with st.spinner("Synthesizing answer..."):
+            answer = synthesize_answer(query, contexts)
+            st.subheader("🧠 Synthesized Answer")
+            st.write(answer)
 else:
     st.info("Please upload at least one file to start.")
