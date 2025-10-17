@@ -8,5 +8,5 @@ torchvision==0.17.0+cpu
 easyocr==1.7.1
 sentence-transformers==3.1.1
 transformers==4.45.2
-faiss-cpu>=1.9.0
+faiss-cpu==1.7.4
 openai==1.47.0
