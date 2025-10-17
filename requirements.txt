@@ -1,11 +1,25 @@
-streamlit==1.29.0
-pypdf==3.16.0
+# Core Streamlit App
+streamlit==1.39.0
+
+# PDF Processing
+pypdf==5.0.1
 pdf2image==1.17.1
 Pillow==10.0.1
-numpy==1.26.5
-faiss-cpu==1.7.4
-sentence-transformers==2.2.2
-torch==2.2.0
-torchvision==0.19.1
-transformers==4.44.2
-easyocr==1.6.2
+
+# Math + Embeddings
+numpy==1.26.4
+sentence-transformers==3.1.1
+transformers==4.45.2
+
+# PyTorch (auto-select version compatible with cloud runtime)
+torch
+torchvision
+
+# Vector Store (for retrieval)
+faiss-cpu>=1.9.0
+
+# OCR (optional for image-based PDFs)
+easyocr==1.7.1
+
+# LLM Access
+openai==1.47.0
